@@ -1,0 +1,200 @@
+========================
+POM.XML (Dependency File)
+========================
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>mobile-verification</artifactId>
+    <version>1.0</version>
+    <packaging>war</packaging>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.oracle.database.jdbc</groupId>
+            <artifactId>ojdbc8</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <version>20210307</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.17.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tomcat.embed</groupId>
+            <artifactId>tomcat-embed-jasper</artifactId>
+        </dependency>
+    </dependencies>
+</project>
+
+==============================
+APPLICATION.PROPERTIES (Config)
+==============================
+server.servlet.context-path=/mobile-verification
+server.port=8080
+spring.mvc.view.prefix=/WEB-INF/views/
+spring.mvc.view.suffix=.jsp
+
+spring.datasource.url=jdbc:oracle:thin:@your-db-host:1521:your-db-service
+spring.datasource.username=your_username
+spring.datasource.password=your_password
+spring.datasource.driver-class-name=oracle.jdbc.OracleDriver
+
+spring.jpa.database-platform=org.hibernate.dialect.Oracle12cDialect
+
+logging.file.name=logs/mobile_verification.log
+
+================================
+CONTROLLER (MobileVerificationController.java)
+================================
+package com.example.mobileverification.controller;
+
+import com.example.mobileverification.service.MobileVerificationService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
+
+@Controller
+public class MobileVerificationController {
+
+    @Autowired
+    private MobileVerificationService verificationService;
+
+    @GetMapping("/")
+    public String showVerificationPage() {
+        return "index"; // Loads index.jsp
+    }
+
+    @PostMapping("/verify")
+    public String verifyMobile(@RequestParam String mobile, Model model) {
+        Map<String, Object> result = verificationService.verifyAndStoreMobile(mobile);
+        model.addAttribute("mobile", mobile);
+        model.addAttribute("verified", result.get("verified"));
+        return "index"; // Reloads index.jsp with results
+    }
+}
+
+================================
+SERVICE (MobileVerificationService.java)
+================================
+package com.example.mobileverification.service;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.json.JSONObject;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Scanner;
+
+@Service
+public class MobileVerificationService {
+
+    private static final Logger logger = LogManager.getLogger(MobileVerificationService.class);
+
+    @Value("${veriphone.api.key}")
+    private String apiKey;
+
+    private final JdbcTemplate jdbcTemplate;
+
+    public MobileVerificationService(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    public Map<String, Object> verifyAndStoreMobile(String mobile) {
+        Map<String, Object> responseMap = new HashMap<>();
+        try {
+            String apiUrl = "https://api.veriphone.io/v2/verify?phone=" + mobile + "&key=" + apiKey;
+            URL url = new URL(apiUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+
+            Scanner scanner = new Scanner(conn.getInputStream());
+            String responseBody = scanner.useDelimiter("\A").next();
+            scanner.close();
+
+            logger.info("API Response: " + responseBody);
+            JSONObject apiResponse = new JSONObject(responseBody);
+            boolean verified = apiResponse.optBoolean("phone_valid", false);
+
+            storeVerificationData(mobile, verified, responseBody);
+
+            responseMap.put("mobile", mobile);
+            responseMap.put("verified", verified);
+        } catch (Exception e) {
+            logger.error("Error verifying mobile number: ", e);
+            responseMap.put("error", "Verification failed");
+        }
+        return responseMap;
+    }
+
+    private void storeVerificationData(String mobile, boolean verified, String apiResponse) {
+        String sql = "CALL INSERT_VERIFICATION_DATA(?, ?, ?)";
+        jdbcTemplate.update(sql, mobile, verified ? 1 : 0, apiResponse);
+    }
+}
+
+============================
+JSP PAGE (index.jsp)
+============================
+<%@ page language="java" contentType="text/html; charset=UTF-8" pageEncoding="UTF-8" %>
+<%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mobile Number Verification</title>
+    <script>
+        function validateMobile() {
+            document.getElementById("verificationForm").submit();
+        }
+    </script>
+</head>
+<body>
+    <h2>Mobile Number Verification</h2>
+    <form id="verificationForm" action="verify" method="post">
+        <label>Mobile Number:</label>
+        <input type="text" name="mobile" value="${mobile}">
+        <button type="button" onclick="validateMobile()">Validate Mobile</button>
+        <br><br>
+        <label>Verified:</label>
+        <input type="checkbox" ${verified ? 'checked' : ''} disabled>
+    </form>
+</body>
+</html>
+
+============================
+STORED PROCEDURE (Oracle DB)
+============================
+CREATE OR REPLACE PROCEDURE INSERT_VERIFICATION_DATA(
+    p_mobile_number IN VARCHAR2,
+    p_verified IN NUMBER,
+    p_api_response IN CLOB
+) AS
+BEGIN
+    INSERT INTO MOBILE_VERIFICATION_LOG (MOBILE_NUMBER, VERIFIED, API_RESPONSE, CREATED_AT)
+    VALUES (p_mobile_number, p_verified, p_api_response, SYSTIMESTAMP);
+    COMMIT;
+END;
+/
